@@ -5,31 +5,21 @@ import { useState, useEffect, useMemo, useRef, useCallback, memo } from 'react';
 // ============================================================================
 
 /**
- * Represents the possible states of a stoplight light
- */
-export type LightState = 'red' | 'yellow' | 'green';
-
-/**
- * Timing configuration for each light in milliseconds
- */
-export interface StoplightTimings {
-  green: number;
-  yellow: number;
-  red: number;
-}
-
-/**
  * Props for the Stoplight component
  */
 export interface StoplightProps {
-  /** Custom timings for each light in milliseconds */
-  timings?: Partial<StoplightTimings>;
-  /** Initial light state */
-  initialLight?: LightState;
+  /** Array of colors for each light (1-4 colors, CSS color values: hex, rgb, or named colors) */
+  colors: string[];
+  /** Array of timings for each light in milliseconds (optional, defaults to 1000ms for each) */
+  timings?: number[];
+  /** Array of light indices to include in the sequence (optional, defaults to all lights bottom-to-top) */
+  sequence?: number[];
+  /** Initial light index (0-based, must be in sequence if provided) */
+  initialLight?: number;
   /** Additional CSS classes for the container */
   className?: string;
-  /** Callback when light changes */
-  onLightChange?: (light: LightState) => void;
+  /** Callback when light changes (receives the new light index) */
+  onLightChange?: (lightIndex: number) => void;
   /** Minimum timing value in milliseconds (default: 10ms) */
   minTiming?: number;
   /** Maximum timing value in milliseconds (default: 2147483647ms ~24.8 days) */
@@ -40,34 +30,29 @@ export interface StoplightProps {
  * Props for individual light component
  */
 interface LightProps {
-  /** The light state (color) */
-  state: LightState;
+  /** The light index */
+  index: number;
   /** Whether this light is currently active */
   isActive: boolean;
+  /** The color for this light (CSS color value) */
+  color: string;
 }
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/** Default timings based on requirements: Green 5s, Yellow 1s, Red 2s */
-const DEFAULT_TIMINGS: StoplightTimings = {
-  green: 5000,
-  yellow: 1000,
-  red: 2000,
-};
+/** Maximum number of lights allowed */
+const MAX_LIGHTS = 4;
+
+/** Default timing in milliseconds */
+const DEFAULT_TIMING = 1000;
 
 /** Maximum safe value for setTimeout (2^31 - 1 milliseconds) */
 const MAX_SAFE_TIMEOUT = 2_147_483_647;
 
 /** Minimum safe timing value in milliseconds */
 const MIN_SAFE_TIMING = 10;
-
-/** Valid light states array for validation */
-const VALID_LIGHT_STATES: readonly LightState[] = ['red', 'yellow', 'green'] as const;
-
-/** Light sequence order */
-const LIGHT_SEQUENCE: readonly LightState[] = ['green', 'yellow', 'red'] as const;
 
 // ============================================================================
 // Utility Functions
@@ -95,49 +80,104 @@ const normalizeTiming = (
 };
 
 /**
- * Validates that a light state is one of the valid states
+ * Validates and normalizes the colors array
  *
- * @param light - The light state to validate
- * @param defaultLight - Default light state to return if invalid
- * @returns Valid light state
+ * @param colors - Array of color strings
+ * @returns Normalized colors array (max 4 colors)
  */
-const validateLightState = (light: unknown, defaultLight: LightState): LightState => {
-  return VALID_LIGHT_STATES.includes(light as LightState) ? (light as LightState) : defaultLight;
+const normalizeColors = (colors: string[] | undefined): string[] => {
+  if (!Array.isArray(colors) || colors.length === 0) {
+    return ['#ef4444', '#facc15', '#22c55e', '#a855f7']; // Default colors
+  }
+  // Limit to max 4 colors
+  return colors.slice(0, MAX_LIGHTS).filter((color) => typeof color === 'string');
 };
 
 /**
- * Merges partial timings with default values, normalizing all values
+ * Validates and normalizes the timings array
  *
- * @param partialTimings - Partial timing configuration
- * @param defaults - Default timing values
+ * @param timings - Array of timing values
+ * @param numLights - Number of lights
  * @param minTiming - Minimum timing value
  * @param maxTiming - Maximum timing value
- * @returns Complete normalized timing configuration
+ * @returns Normalized timings array
  */
-const mergeTimings = (
-  partialTimings: Partial<StoplightTimings> | undefined,
-  defaults: StoplightTimings,
+const normalizeTimings = (
+  timings: number[] | undefined,
+  numLights: number,
   minTiming: number,
   maxTiming: number,
-): StoplightTimings => {
-  return {
-    green: normalizeTiming(partialTimings?.green, defaults.green, minTiming, maxTiming),
-    yellow: normalizeTiming(partialTimings?.yellow, defaults.yellow, minTiming, maxTiming),
-    red: normalizeTiming(partialTimings?.red, defaults.red, minTiming, maxTiming),
-  };
+): number[] => {
+  if (!Array.isArray(timings)) {
+    return Array(numLights).fill(DEFAULT_TIMING);
+  }
+  // Fill missing timings with default, limit to number of lights
+  const normalized: number[] = [];
+  for (let i = 0; i < numLights; i++) {
+    normalized.push(
+      normalizeTiming(timings[i], DEFAULT_TIMING, minTiming, maxTiming),
+    );
+  }
+  return normalized;
 };
 
 /**
- * Gets the next light in the sequence
+ * Validates light index
  *
- * @param currentLight - The current active light
- * @returns The next light state in sequence
+ * @param index - The light index to validate
+ * @param maxIndex - Maximum valid index
+ * @param defaultIndex - Default index to return if invalid
+ * @returns Valid light index
  */
-const getNextLight = (currentLight: LightState): LightState => {
-  const currentIndex = LIGHT_SEQUENCE.indexOf(currentLight);
-  const nextIndex = (currentIndex + 1) % LIGHT_SEQUENCE.length;
-  return LIGHT_SEQUENCE[nextIndex];
+const validateLightIndex = (
+  index: number | undefined,
+  maxIndex: number,
+  defaultIndex: number,
+): number => {
+  if (typeof index !== 'number' || Number.isNaN(index) || !Number.isFinite(index)) {
+    return defaultIndex;
+  }
+  const clamped = Math.floor(index);
+  if (clamped < 0 || clamped > maxIndex) {
+    return defaultIndex;
+  }
+  return clamped;
 };
+
+/**
+ * Normalizes and validates the sequence array
+ * Preserves all entries including duplicates to allow custom sequences
+ *
+ * @param sequence - Array of light indices to include in sequence (can contain duplicates)
+ * @param maxIndex - Maximum valid light index
+ * @returns Normalized sequence array (defaults to all indices bottom-to-top)
+ */
+const normalizeSequence = (
+  sequence: number[] | undefined,
+  maxIndex: number,
+): number[] => {
+  if (!Array.isArray(sequence) || sequence.length === 0) {
+    // Default: all lights in reverse order (bottom to top)
+    const defaultSeq: number[] = [];
+    for (let i = maxIndex; i >= 0; i--) {
+      defaultSeq.push(i);
+    }
+    return defaultSeq;
+  }
+  // Filter and validate indices, preserving duplicates and order
+  const validIndices = sequence
+    .filter(
+      (idx) =>
+        typeof idx === 'number' &&
+        Number.isFinite(idx) &&
+        idx >= 0 &&
+        idx <= maxIndex,
+    )
+    .map((idx) => Math.floor(idx));
+  // If no valid indices, return default
+  return validIndices.length > 0 ? validIndices : [maxIndex];
+};
+
 
 // ============================================================================
 // Sub-components
@@ -147,28 +187,51 @@ const getNextLight = (currentLight: LightState): LightState => {
  * Individual light component for the stoplight
  * Memoized to prevent unnecessary re-renders
  */
-const Light = memo<LightProps>(({ state, isActive }) => {
+const Light = memo<LightProps>(({ index, isActive, color }) => {
   const baseClasses =
     'w-24 h-24 rounded-full border-4 border-gray-900 transition-all duration-300';
-  const activeClasses: Record<LightState, string> = {
-    red: 'bg-red-500 shadow-[0_0_30px_15px_rgba(239,68,68,0.6)]',
-    yellow: 'bg-yellow-400 shadow-[0_0_30px_15px_rgba(250,204,21,0.6)]',
-    green: 'bg-green-500 shadow-[0_0_30px_15px_rgba(34,197,94,0.6)]',
-  };
-  const inactiveClasses: Record<LightState, string> = {
-    red: 'bg-red-900 opacity-30',
-    yellow: 'bg-yellow-900 opacity-30',
-    green: 'bg-green-900 opacity-30',
+
+  // Convert color to rgba for shadow effect
+  const getShadowColor = (colorValue: string, alpha: number): string => {
+    // Handle hex colors
+    if (colorValue.startsWith('#')) {
+      const r = parseInt(colorValue.slice(1, 3), 16);
+      const g = parseInt(colorValue.slice(3, 5), 16);
+      const b = parseInt(colorValue.slice(5, 7), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+    // Handle rgb colors
+    if (colorValue.startsWith('rgb(')) {
+      return colorValue.replace('rgb(', 'rgba(').replace(')', `, ${alpha})`);
+    }
+    // Handle rgba colors - replace alpha
+    if (colorValue.startsWith('rgba(')) {
+      return colorValue.replace(
+        /rgba\(([^,]+),([^,]+),([^,]+),([^)]+)\)/,
+        `rgba($1,$2,$3,${alpha})`,
+      );
+    }
+    // For named colors, try to convert (fallback to original color with opacity)
+    // This is a simplified approach - for production, consider using a color library
+    return colorValue;
   };
 
-  const className = `${baseClasses} ${isActive ? activeClasses[state] : inactiveClasses[state]}`;
+  const opacityClass = isActive ? 'opacity-100' : 'opacity-30';
+  const className = `${baseClasses} ${opacityClass}`;
+
+  const shadowStyle = isActive
+    ? { boxShadow: `0 0 30px 15px ${getShadowColor(color, 0.6)}` }
+    : {};
 
   return (
     <div
       className={className}
+      style={{ backgroundColor: color, ...shadowStyle }}
       role="status"
       aria-live="polite"
-      aria-label={isActive ? `${state} light is active` : `${state} light is inactive`}
+      aria-label={
+        isActive ? `Light ${index + 1} is active` : `Light ${index + 1} is inactive`
+      }
     />
   );
 });
@@ -188,11 +251,33 @@ const validateProps = (props: StoplightProps): void => {
     return;
   }
 
-  if (props.timings) {
-    Object.entries(props.timings).forEach(([key, value]) => {
-      if (value !== undefined && (typeof value !== 'number' || value < 0)) {
+  if (!Array.isArray(props.colors) || props.colors.length === 0) {
+    console.warn(
+      'Stoplight: colors must be a non-empty array of color strings.',
+    );
+  }
+
+  if (props.colors && props.colors.length > MAX_LIGHTS) {
+    console.warn(
+      `Stoplight: Maximum ${MAX_LIGHTS} lights are supported. Only the first ${MAX_LIGHTS} colors will be used.`,
+    );
+  }
+
+  if (props.colors) {
+    props.colors.forEach((color, index) => {
+      if (typeof color !== 'string') {
         console.warn(
-          `Stoplight: Invalid timing value for ${key}: ${value}. Expected a non-negative number.`,
+          `Stoplight: Invalid color at index ${index}: ${color}. Expected a CSS color string (hex, rgb, or named color).`,
+        );
+      }
+    });
+  }
+
+  if (props.timings) {
+    props.timings.forEach((timing, index) => {
+      if (typeof timing !== 'number' || timing < 0) {
+        console.warn(
+          `Stoplight: Invalid timing at index ${index}: ${timing}. Expected a non-negative number.`,
         );
       }
     });
@@ -219,43 +304,97 @@ const validateProps = (props: StoplightProps): void => {
       `Stoplight: minTiming (${props.minTiming}) should be less than or equal to maxTiming (${props.maxTiming}).`,
     );
   }
+
+  if (props.sequence) {
+    if (!Array.isArray(props.sequence)) {
+      console.warn('Stoplight: sequence must be an array of numbers.');
+    } else {
+      props.sequence.forEach((idx, pos) => {
+        if (typeof idx !== 'number' || idx < 0 || idx >= (props.colors?.length ?? MAX_LIGHTS)) {
+          console.warn(
+            `Stoplight: Invalid sequence index at position ${pos}: ${idx}. Must be a valid light index.`,
+          );
+        }
+      });
+    }
+  }
+
+  if (
+    props.initialLight !== undefined &&
+    (props.initialLight < 0 || props.initialLight >= (props.colors?.length ?? MAX_LIGHTS))
+  ) {
+    console.warn(
+      `Stoplight: initialLight (${props.initialLight}) is out of range. Should be between 0 and ${(props.colors?.length ?? MAX_LIGHTS) - 1}.`,
+    );
+  }
 };
 
 /**
- * Stoplight component that cycles through red, yellow, and green lights
- * with configurable timing for each state.
+ * Stoplight component that cycles through up to 4 lights
+ * with configurable timing, colors, and sequence for each light.
  *
  * @example
  * ```tsx
  * <Stoplight
- *   timings={{ green: 5000, yellow: 1000, red: 2000 }}
- *   onLightChange={(light) => console.log(`Light changed to ${light}`)}
+ *   colors={['#ff0000', '#ffff00', '#00ff00', '#800080']}
+ *   timings={[5000, 1000, 2000, 1000]}
+ *   sequence={[3, 1, 0]} // Only cycle through lights at indices 3, 1, 0
+ *   onLightChange={(index) => console.log(`Light changed to index ${index}`)}
  * />
  * ```
  */
 const Stoplight = memo<StoplightProps>(
   ({
+    colors,
     timings,
-    initialLight = 'green',
+    sequence,
+    initialLight,
     className = '',
     onLightChange,
     minTiming = MIN_SAFE_TIMING,
     maxTiming = MAX_SAFE_TIMEOUT,
   }) => {
     // Validate props in development mode
-    validateProps({ timings, initialLight, className, onLightChange, minTiming, maxTiming });
-    // Normalize and validate props
+    validateProps({ colors, timings, sequence, initialLight, className, onLightChange, minTiming, maxTiming });
+
+    // Normalize colors and determine number of lights
+    const normalizedColors = useMemo(() => normalizeColors(colors), [colors]);
+    const numLights = normalizedColors.length;
+    const maxLightIndex = numLights - 1;
+
+    // Normalize sequence (defaults to all lights bottom-to-top)
+    const normalizedSequence = useMemo(
+      () => normalizeSequence(sequence, maxLightIndex),
+      [sequence, maxLightIndex],
+    );
+
+    // Normalize timings
     const normalizedTimings = useMemo(
-      () => mergeTimings(timings, DEFAULT_TIMINGS, minTiming, maxTiming),
-      [timings, minTiming, maxTiming],
+      () => normalizeTimings(timings, numLights, minTiming, maxTiming),
+      [timings, numLights, minTiming, maxTiming],
     );
 
-    const validatedInitialLight = useMemo(
-      () => validateLightState(initialLight, 'green'),
-      [initialLight],
-    );
+    // Validate and normalize initial light index
+    // Default to first light in sequence (which is the last index in default bottom-to-top order)
+    const defaultInitialLight = normalizedSequence[0];
+    const validatedInitialLight = useMemo(() => {
+      const validated = validateLightIndex(initialLight, maxLightIndex, defaultInitialLight);
+      // If initialLight is provided but not in sequence, use first in sequence
+      if (initialLight !== undefined && !normalizedSequence.includes(validated)) {
+        return defaultInitialLight;
+      }
+      return validated;
+    }, [initialLight, maxLightIndex, defaultInitialLight, normalizedSequence]);
 
-    const [activeLight, setActiveLight] = useState<LightState>(validatedInitialLight);
+    // Compute initial sequence position
+    const initialSequencePosition = useMemo(() => {
+      const pos = normalizedSequence.indexOf(validatedInitialLight);
+      return pos >= 0 ? pos : 0;
+    }, [validatedInitialLight, normalizedSequence]);
+
+    // Track current position in sequence array to handle duplicates correctly
+    const [sequencePosition, setSequencePosition] = useState<number>(initialSequencePosition);
+    const activeLightIndex = normalizedSequence[sequencePosition];
     const onLightChangeRef = useRef(onLightChange);
 
     // Keep callback ref up to date without causing re-renders
@@ -263,30 +402,41 @@ const Stoplight = memo<StoplightProps>(
       onLightChangeRef.current = onLightChange;
     }, [onLightChange]);
 
-    // Reset state when initialLight prop changes
+    // Create a stable key for the sequence to detect changes
+    const sequenceKey = useMemo(
+      () => normalizedSequence.join(',') + `:${initialSequencePosition}`,
+      [normalizedSequence, initialSequencePosition],
+    );
+
+    // Reset state when sequence or initial position changes
+    // This is necessary to reset the sequence position when props change
     useEffect(() => {
-      setActiveLight(validatedInitialLight);
-    }, [validatedInitialLight]);
+      setSequencePosition(initialSequencePosition);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sequenceKey]);
 
     // Stable callback for light transitions
     const handleLightTransition = useCallback(() => {
-      setActiveLight((prevLight) => {
-        const nextLight = getNextLight(prevLight);
+      setSequencePosition((prevPos) => {
+        // Move to next position in sequence, cycling to start if at end
+        const nextPos = (prevPos + 1) % normalizedSequence.length;
+        const nextIndex = normalizedSequence[nextPos];
 
         // Safely call callback with error handling
         try {
-          onLightChangeRef.current?.(nextLight);
+          onLightChangeRef.current?.(nextIndex);
         } catch (error) {
           console.error('Stoplight: Error in onLightChange callback:', error);
         }
 
-        return nextLight;
+        return nextPos;
       });
-    }, []);
+    }, [normalizedSequence]);
 
     // Manage the cycling timer
+    // Use sequencePosition as dependency to ensure timer resets even when light index is the same
     useEffect(() => {
-      const currentTiming = normalizedTimings[activeLight];
+      const currentTiming = normalizedTimings[activeLightIndex];
 
       // normalizedTimings already validates and clamps values, so this check is redundant
       // Timer will always be valid at this point
@@ -295,7 +445,7 @@ const Stoplight = memo<StoplightProps>(
       return () => {
         clearTimeout(timer);
       };
-    }, [activeLight, normalizedTimings, handleLightTransition]);
+    }, [sequencePosition, activeLightIndex, normalizedTimings, handleLightTransition]);
 
     // Build container className - template literal handles spacing correctly
     const containerClassName = className
@@ -305,9 +455,14 @@ const Stoplight = memo<StoplightProps>(
     return (
       <div className={containerClassName} role="img" aria-label="Traffic stoplight">
         <div className="flex flex-col gap-4 bg-gray-700 p-4 rounded-lg">
-          <Light state="red" isActive={activeLight === 'red'} />
-          <Light state="yellow" isActive={activeLight === 'yellow'} />
-          <Light state="green" isActive={activeLight === 'green'} />
+          {normalizedColors.map((color, index) => (
+            <Light
+              key={index}
+              index={index}
+              isActive={activeLightIndex === index}
+              color={color}
+            />
+          ))}
         </div>
       </div>
     );
@@ -317,4 +472,3 @@ const Stoplight = memo<StoplightProps>(
 Stoplight.displayName = 'Stoplight';
 
 export default Stoplight;
-
