@@ -8,8 +8,8 @@ import { useState, useEffect, useMemo, useRef, useCallback, memo } from 'react';
  * Props for the Stoplight component
  */
 export interface StoplightProps {
-  /** Array of colors for each light (1-4 colors, CSS color values: hex, rgb, or named colors) */
-  colors: string[];
+  /** Array of colors for each light (CSS color values: hex, rgb, or named colors). Default: 3 lights (yellow, red, green) */
+  colors?: string[];
   /** Array of timings for each light in milliseconds (optional, defaults to 1000ms for each) */
   timings?: number[];
   /** Array of light indices to include in the sequence (optional, defaults to all lights bottom-to-top) */
@@ -42,8 +42,6 @@ interface LightProps {
 // Constants
 // ============================================================================
 
-/** Maximum number of lights allowed */
-const MAX_LIGHTS = 4;
 
 /** Default timing in milliseconds */
 const DEFAULT_TIMING = 1000;
@@ -83,14 +81,15 @@ const normalizeTiming = (
  * Validates and normalizes the colors array
  *
  * @param colors - Array of color strings
- * @returns Normalized colors array (max 4 colors)
+ * @returns Normalized colors array (default: yellow, red, green)
  */
 const normalizeColors = (colors: string[] | undefined): string[] => {
   if (!Array.isArray(colors) || colors.length === 0) {
-    return ['#ef4444', '#facc15', '#22c55e', '#a855f7']; // Default colors
+    // Default: 3 lights - yellow, red, green (top to bottom)
+    return ['#facc15', '#ef4444', '#22c55e']; // yellow, red, green
   }
-  // Limit to max 4 colors
-  return colors.slice(0, MAX_LIGHTS).filter((color) => typeof color === 'string');
+  // Filter out invalid colors, no limit on number of lights
+  return colors.filter((color) => typeof color === 'string');
 };
 
 /**
@@ -158,6 +157,7 @@ const normalizeSequence = (
 ): number[] => {
   if (!Array.isArray(sequence) || sequence.length === 0) {
     // Default: all lights in reverse order (bottom to top)
+    // For 3 lights (0=yellow, 1=red, 2=green): [2, 1, 0]
     const defaultSeq: number[] = [];
     for (let i = maxIndex; i >= 0; i--) {
       defaultSeq.push(i);
@@ -257,11 +257,6 @@ const validateProps = (props: StoplightProps): void => {
     );
   }
 
-  if (props.colors && props.colors.length > MAX_LIGHTS) {
-    console.warn(
-      `Stoplight: Maximum ${MAX_LIGHTS} lights are supported. Only the first ${MAX_LIGHTS} colors will be used.`,
-    );
-  }
 
   if (props.colors) {
     props.colors.forEach((color, index) => {
@@ -310,35 +305,39 @@ const validateProps = (props: StoplightProps): void => {
       console.warn('Stoplight: sequence must be an array of numbers.');
     } else {
       props.sequence.forEach((idx, pos) => {
-        if (typeof idx !== 'number' || idx < 0 || idx >= (props.colors?.length ?? MAX_LIGHTS)) {
+        const maxIndex = (props.colors?.length ?? 3) - 1;
+        if (typeof idx !== 'number' || idx < 0 || idx > maxIndex) {
           console.warn(
-            `Stoplight: Invalid sequence index at position ${pos}: ${idx}. Must be a valid light index.`,
+            `Stoplight: Invalid sequence index at position ${pos}: ${idx}. Must be between 0 and ${maxIndex}.`,
           );
         }
       });
     }
   }
 
+  const defaultNumLights = 3;
+  const numLights = props.colors?.length ?? defaultNumLights;
   if (
     props.initialLight !== undefined &&
-    (props.initialLight < 0 || props.initialLight >= (props.colors?.length ?? MAX_LIGHTS))
+    (props.initialLight < 0 || props.initialLight >= numLights)
   ) {
     console.warn(
-      `Stoplight: initialLight (${props.initialLight}) is out of range. Should be between 0 and ${(props.colors?.length ?? MAX_LIGHTS) - 1}.`,
+      `Stoplight: initialLight (${props.initialLight}) is out of range. Should be between 0 and ${numLights - 1}.`,
     );
   }
 };
 
 /**
- * Stoplight component that cycles through up to 4 lights
+ * Stoplight component that cycles through configurable number of lights
  * with configurable timing, colors, and sequence for each light.
+ * Default: 3 lights (yellow, red, green).
  *
  * @example
  * ```tsx
  * <Stoplight
- *   colors={['#ff0000', '#ffff00', '#00ff00', '#800080']}
- *   timings={[5000, 1000, 2000, 1000]}
- *   sequence={[3, 1, 0]} // Only cycle through lights at indices 3, 1, 0
+ *   colors={['#ff0000', '#ffff00', '#00ff00']}
+ *   timings={[5000, 1000, 2000]}
+ *   sequence={[2, 1, 0]} // Only cycle through lights at indices 2, 1, 0
  *   onLightChange={(index) => console.log(`Light changed to index ${index}`)}
  * />
  * ```
